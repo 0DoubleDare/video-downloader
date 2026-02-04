@@ -1,14 +1,21 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")] // hide console window on Windows in release
-#![expect(rustdoc::missing_crate_level_docs)] // it's an example
+#![expect(rustdoc::missing_crate_level_docs)]
 
 use eframe::egui;
-use std::path::PathBuf;
+use std::{ path::PathBuf, error::Error };
 use rfd::FileDialog;
-use yt_dlp::cache::{VideoCodecPreference, VideoQuality};
+use yt_dlp::prelude::{VideoQuality, VideoCodecPreference};
 use yt_dlp::{Youtube, client::Libraries, model::AudioQuality};
-use std::sync::mpsc;
 use std::sync::mpsc::{Sender, Receiver, channel };
-use egui::text_selection::accesskit_text::update_accesskit_for_text_widget;
+// use std::sync::OnceLock;
+
+/// Расширение исполняемого файла. Зависит от операционной системы.
+///
+/// Windows - ".exe"
+///
+/// Linux - "" (Пустая строка)
+// static EXTENSION: OnceLock<String> = OnceLock::new();
+// static EXECUTABLES_DIR: OnceLock<String> = OnceLock::new();
 
 struct MyApp {
     text_url: String,
@@ -56,7 +63,9 @@ impl eframe::App for MyApp {
                 self.rx = Some(rx);
 
                 tokio::spawn(async move {
-                   let _ = download_video(path, url.clone(), tx).await;
+                    if let Err(e) = download_video(path, url).await {
+                        eprintln!("ERROR: {e}");
+                    }
                 });
             }
 
@@ -66,12 +75,13 @@ impl eframe::App for MyApp {
     }
 }
 
-fn main() -> Result<(), eframe::Error>{
+#[tokio::main]
+async fn main() -> Result<(), eframe::Error> {
     let rt = tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(2)
         .enable_all()
         .build()
         .unwrap();
+
     let _enter = rt.enter();
 
     let options = eframe::NativeOptions::default();
@@ -83,43 +93,120 @@ fn main() -> Result<(), eframe::Error>{
     )
 }
 
-async fn download_video(
-    output_dir: PathBuf,
-    url: String,
-    tx: Sender<f32>
-) -> Result<(), Box<dyn std::error::Error>> {
+/// Описание фнукции скачивания видео
+///
+/// ```output_dir: PathBuf``` - Путь в котором будем хранится ваше видео
+///
+/// ```url: String``` - Ссылка на видео
+///
+/// ```tx: Sender<f32>``` - Для изменения прогресса скачивания в UI, отправляет значение типа f32
+pub async fn download_video(
+    download_directory: PathBuf,
+    video_url: String,
+) -> Result<(), Box<dyn Error>> {
     let libraries_dir = PathBuf::from("libs");
+    let output_dir = PathBuf::from("output");
+
     let youtube = libraries_dir.join("yt-dlp");
     let ffmpeg = libraries_dir.join("ffmpeg");
 
-    println!("yt-dlp path: {:?}", youtube);
-    println!("ffmpeg path: {:?}", ffmpeg);
+    println!("yt-dlp path: {:?}; Exists: {}", youtube, youtube.exists());
+    println!("ffmpeg path: {:?}; Exists: {}", ffmpeg, ffmpeg.exists());
+
+    if !youtube.exists() && !ffmpeg.exists() {
+        println!("Needed libraries not found. Install...");
+        download_library().await?;
+        println!("Needed libraries has been install");
+    }
 
     let libraries = Libraries::new(youtube, ffmpeg);
-    let fetcher = Youtube::new(libraries, output_dir.clone()).await.expect("Fetcher error");
+    let fetcher = Youtube::new(libraries, output_dir).await?;
+    let video = fetcher.fetch_video_infos(video_url).await?;
 
-    println!("...Start download...");
-    let _ = tx.send(0.5);
+    println!("video infos: {}", video);
 
-    let video_path =
-        fetcher.download(url.clone(), output_dir.join("my-video.mp4"))
-            .video_quality(VideoQuality::Best)
-            .video_codec(VideoCodecPreference::AV1)
-            .audio_quality(AudioQuality::Best)
-            .execute().await?;
+    let download_id = fetcher.download_video_with_progress(
+        &video,
+        "video-with-progress.mp4",
+        |downloaded, total| {
+            let percentage = if total > 0 {
+                (downloaded as f32 / total as f32 * 100.0) as u64
+            } else {
+                0
+            };
+            println!("Progress: {}/{} bytes ({}%)", downloaded, total, percentage);
+        }
+    ).await?;
 
-    let _ = tx.send(1.0);
-    println!("Downloaded to: {:?}", video_path);
+    fetcher.wait_for_download(download_id).await;
+
+    println!("Download complete");
+
     Ok(())
 }
+// async fn download_video(
+//     output_dir: PathBuf,
+//     url: String,
+//     tx: Sender<f32>
+// ) -> Result<(), Box<dyn Error>> {
+//     std::fs::create_dir_all(&output_dir)?;
+//     #[cfg(windows)]
+//     let extension = ".exe";
+//     #[cfg(not(windows))]
+//     let extension = "";
+//
+//     let libraries_dir = PathBuf::from("libs");
+//     let youtube = libraries_dir.join(format!("yt-dlp{}", extension));
+//     let ffmpeg = libraries_dir.join(format!("ffmpeg{}", extension));
+//
+//     if !youtube.exists() || !ffmpeg.exists() {
+//         println!("Needed libraries not found. Installing...");
+//         let _ = download_library();
+//         println!("Needed libraries has been install");
+//     }
+//
+//     println!("yt-dlp path: {:?}; Exists: {}", youtube, youtube.exists());
+//     println!("ffmpeg path: {:?}; Exists: {}", ffmpeg, ffmpeg.exists());
+//
+//     let libraries = Libraries::new(youtube, ffmpeg);
+//     let fetcher = Youtube::new(libraries, output_dir.clone()).await.expect("Fetcher error");
+//
+//     println!("...Start download...");
+//     let _ = tx.send(0.5);
+//
+//     let video_path =
+//         fetcher.download(url.clone(), PathBuf::from("my-video.mp4"))
+//             .video_quality(VideoQuality::Best)
+//             .video_codec(VideoCodecPreference::AV1)
+//             .audio_quality(AudioQuality::Best)
+//             .execute().await?;
+//
+//     let _ = tx.send(1.0);
+//     println!("Downloaded to: {:?}", video_path);
+//     Ok(())
+// }
 
-#[tokio::main]
 pub async fn download_library() -> Result<(), Box<dyn Error>> {
     let executables_dir = PathBuf::from("libs");
     let output_dir = PathBuf::from("output");
 
     let fetcher =
-        Youtube::with_new_binaries(executables_dir, output_dir);
+        Youtube::with_new_binaries(executables_dir, output_dir).await?;
 
     Ok(())
 }
+
+// #[tokio::main]
+// pub async fn update_library() -> Result<(), Box<dyn Error>> {
+//     let libraries_dir = PathBuf::from("libs");
+//     let output_dir = PathBuf::from("output");
+//
+//     let youtube = libraries_dir.join("yt-dlp");
+//     let ffmpeg = libraries_dir.join("ffmpeg");
+//
+//     let libraries = Libraries::new(youtube, ffmpeg);
+//     let fetcher = Youtube::new(libraries, output_dir);
+//
+//     fetcher.update_downloader().await?;
+//     Ok(())
+// }
