@@ -3,16 +3,14 @@
 
 use eframe::egui;
 use std::{ path::PathBuf, error::Error };
-use rfd::FileDialog;
-use yt_dlp::prelude::{VideoQuality, VideoCodecPreference, ManagerConfig};
-use yt_dlp::{Youtube, client::Libraries, model::AudioQuality};
-use std::sync::mpsc::{Sender, Receiver, channel };
-use std::process::Command;
-use std::path::Path;
 use std::time::Duration;
-use egui::FocusDirection::Down;
+use rfd::FileDialog;
+use yt_dlp::prelude::{LibraryInstaller};
+use yt_dlp::{Youtube, client::deps::Libraries, DownloadPriority};
+use yt_dlp::model::selector::{VideoQuality, AudioQuality, VideoCodecPreference};
 use tokio::sync::watch;
-use yt_dlp::model::format::DownloaderOptions;
+use yt_dlp::model::AudioCodecPreference;
+
 // use std::sync::OnceLock;
 /// Расширение исполняемого файла. Зависит от операционной системы.
 ///
@@ -22,9 +20,16 @@ use yt_dlp::model::format::DownloaderOptions;
 // static EXTENSION: OnceLock<String> = OnceLock::new();
 // static EXECUTABLES_DIR: OnceLock<String> = OnceLock::new();
 
+enum VideoDownloadState {
+    Downloading,
+    Succeeded,
+    Error,
+    State
+}
 struct MyApp {
     text_url: String,
     file_path: Option<PathBuf>,
+    download_state: VideoDownloadState,
     download_progress: f32,
     rx: Option<watch::Receiver<f32>>,
 }
@@ -33,7 +38,8 @@ impl Default for MyApp {
     fn default() -> Self {
         Self {
             text_url: "".to_string(),
-            file_path: None,
+            file_path: Some(PathBuf::from("~/")),
+            download_state: VideoDownloadState::State,
             download_progress: 0.0,
             rx: None,
         }
@@ -57,6 +63,8 @@ impl eframe::App for MyApp {
             }
 
             ui.text_edit_singleline(&mut self.text_url);
+
+            // ui.selectable_label();
 
             if ui.button("Start download").clicked() {
                 let url = self.text_url.clone();
@@ -98,6 +106,10 @@ fn main() -> Result<(), eframe::Error> {
     )
 }
 
+//FIXME: Исправить лимит timeout с 30 секунд до 600
+//TODO: Добавить изменения цвета прогресс бара в разных состояниях скачивания видео.
+//TODO: Добавить отдельную вкладку объединения аудио и видео
+//TODO: Добавить возможность отмены загрузки
 /// Описание фнукции скачивания видео
 ///
 /// ```output_dir: PathBuf``` - Путь в котором будем хранится ваше видео
@@ -121,12 +133,13 @@ pub async fn download_video(
 
     if !youtube.exists() && !ffmpeg.exists() {
         println!("Needed libraries not found. Install...");
-        download_library().await?;
+        check_or_download_library(&youtube, &ffmpeg).await?;
         println!("Needed libraries has been install");
     }
 
     let libraries = Libraries::new(youtube, ffmpeg);
-    let fetcher = Youtube::new(libraries, output_dir).await?;
+    let mut fetcher = Youtube::new(libraries, output_dir).await?;
+    fetcher.timeout = Duration::from_secs(600);
 
     let video = fetcher.fetch_video_infos(video_url.clone()).await?;
 
@@ -141,8 +154,10 @@ pub async fn download_video(
 
     let download_id = fetcher.download(video_url, format!("{video_title}.{video_ext}"))
         .video_quality(VideoQuality::Best)
-        .video_codec(VideoCodecPreference::AV1)
+        .video_codec(VideoCodecPreference::Any)
         .audio_quality(AudioQuality::Best)
+        .audio_codec(AudioCodecPreference::Opus)
+        .priority(DownloadPriority::High)
         .with_progress(move |progress| {
             let val = progress as f32;
             println!("progress: {}%", (val * 100.0).round());
@@ -156,12 +171,22 @@ pub async fn download_video(
     Ok(())
 }
 
-pub async fn download_library() -> Result<(), Box<dyn Error>> {
+pub async fn check_or_download_library(youtube: &PathBuf, ffmpeg: &PathBuf) -> Result<(), Box<dyn Error>> {
     let executables_dir = PathBuf::from("libs");
-    let output_dir = PathBuf::from("output");
+    let installer = LibraryInstaller::new(executables_dir);
 
-    let fetcher =
-        Youtube::with_new_binaries(executables_dir, output_dir).await?;
+    if !youtube.exists() {
+        let youtube = installer
+            .install_youtube(None)
+            .await
+            .unwrap();
+    }
+    if !ffmpeg.exists() {
+        let ffmpeg = installer
+            .install_ffmpeg(None)
+            .await
+            .unwrap();
+    }
 
     Ok(())
 }
