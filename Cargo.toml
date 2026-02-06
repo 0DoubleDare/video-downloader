@@ -1,5 +1,5 @@
 [package]
-name = "hello_world"
+name = "rust_video_downloader"
 version = "0.0.2"
 license = "MIT OR Apache-2.0"
 edition = "2024"
