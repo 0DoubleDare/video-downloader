@@ -1,0 +1,5 @@
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"
+# On NixOS in cross shells, static CRT often adds `-l:libpthread.a` which is
+# missing in some mingw toolchains. Dynamic CRT avoids that linker error.
+rustflags = ["-C", "target-feature=-crt-static"]
