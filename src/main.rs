@@ -8,7 +8,7 @@ use iced::Task;
 use model::AppModel;
 
 fn main() -> iced::Result {
-    iced::application("Everywhere Video Downloader", update, view::view)
+    iced::application("YouTube Video Helper", update, view::view)
         .run_with(|| (AppModel::default(), Task::none()))
 }
 
